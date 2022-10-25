@@ -18,6 +18,8 @@
 #define ignmi 11
 #define tps A0
 #define batt A1
+#define Numteeth 1
+
 //______________________________________________________________________ NOTES
 //gotta set timer2 prescaler to 1024, where OCR2A iof 255 coresponds to ~ 32ms.
 //for injecotr there should be only ~1.6ms at idle, dependent on voltage!
@@ -48,6 +50,7 @@ uint8_t inj[8][16] = {{ 35, 50, 70, 75, 75, 80, 80, 85, 90, 90, 95, 95,100,100,1
                       {100,110,120,130,140,150,170,190,205,220,225,230,235,240,245,250},//87,5%
                       {100,110,120,130,145,160,180,200,220,235,245,250,250,250,250,255}};//100%
 
+
 long unsigned calc_adv;
 long unsigned period;
 long unsigned dbnce = millis();
@@ -56,10 +59,10 @@ long unsigned prev = micros();
 int unsigned rpm;
 int unsigned inj_ign_delay;
 
-byte sector;
-byte tps_sec;
-byte calc_inj;
-byte calc_dwell;
+uint8_t sector;
+uint8_t tps_sec;
+uint8_t calc_inj;
+uint8_t calc_dwell;
 
 bool pres;
 
@@ -109,6 +112,15 @@ void reload(uint8_t oper, uint8_t type, uint8_t col, uint8_t row, int num){//rea
       EEPROM.write(col*row+(type*16*8*2),num & 0xff);
       EEPROM.write((col*row+(type*16*8*2))+1,num >> 8);
       break;
+//______________________________________________________________________ WRITE ALL FROM SERIAL MODE (for one MAP, sizeof 16x8, separation ",")
+      case 2:
+      int val;
+        for(int index = 0; index <= (2*16*8);index += 2){
+          val = Serial.parseInt();
+          EEPROM.write(index+((2*16*8)*type), val & 0xff);
+          EEPROM.write(index+1+((2*16*8)*type), val >> 8);
+        }
+      break;
     default:
       break;
   }
@@ -146,25 +158,27 @@ ISR(PCINT0_vect) {
 void TDC() {
 //calculate period, store millis() to prev. time, then set OCR0A to coresponding value, and enable timer0
   //use for only 1 pulse per rev.
-/*
+  //for now use it as single pulse per rev detection
+//*
   period = micros() - prev;
   prev = micros();
   ICR1 = calc_adv;
   TIMSK1 |= (1 << OCIE0A);//enables timer1
-*/
-  //use for multi-pulse per rev, w/ 1 empty space. gotta also do some multiplication in rpm calculation depending on N# of teeth
-//*
+//*/
+  //use for multi-pulse per rev, w/ 1 empty space. need to define Numteeth to number of teeth a full wheel would have
+/*
   if ((micros() - prev) <= ((period << 1) - 50)){
     period = micros() - prev;
     prev = micros();
   }
   else{
+    prev = micros();
     ICR1 = calc_adv * 0.9;
     inj_ign_delay = calc_adv - ICR1;
     TIMSK1 |= (1 << OCIE0A);//enables timer1
   }
  
-//*/  
+*/  
 }
 
 //______________________________________________________________________ TIMER1 INTERRUPT
@@ -203,13 +217,12 @@ void setup() {
   u8g.setColorIndex(1); 
   u8g.setFont(u8g_font_unifont);
 
-  pinMode(6, OUTPUT);
   pinMode(igni, OUTPUT);
   pinMode(fuel, OUTPUT);
-  pinMode(8, INPUT_PULLUP);
-  pinMode(9, INPUT_PULLUP);
-  pinMode(10, INPUT_PULLUP);
-  pinMode(11, INPUT_PULLUP);
+  pinMode(advmi, INPUT_PULLUP);
+  pinMode(advpl, INPUT_PULLUP);
+  pinMode(ignmi, INPUT_PULLUP);
+  pinMode(ignpl, INPUT_PULLUP);
   pinMode(hall, INPUT_PULLUP);
 
   cli();//stop interrupts
@@ -251,21 +264,13 @@ void loop() {
 //______________________________________________________________________ CALCULATIONS
   tps_sec = analogRead(tps)/128;
   sector = (((1.0/period)*60000000)+0)/1100;
-  rpm = (1/((float)period))*60000000;
+  rpm = (1/((float)period))*60000000*Numteeth;
 
 //gets the desired advance, and calculates it into a "time" format to paste into comp. reg. of timer 1 on TDC interrupt
   calc_adv = ((1-(adv[tps_sec][sector]/3600.0))*(period/4));
 
-//does PWM for injector, might be supperceeded by just timing based, one-per-rev injection of varying length
+//timing based, one-per-rev injection of varying length value
   calc_inj = inj[tps_sec][sector];
-/*  if(rpm >= 500){
-    TCCR0A |= 0b10000011;
-    OCR0A = inj[tps_sec][sector];
-  }
-  else {
-    TCCR0A &= 0b00000000;
-    OCR0A = 0;
-  }*/
 
 //______________________________________________________________________ DISPLAY "VITAL" INFO TO OLED
   u8g.firstPage();  
@@ -293,8 +298,6 @@ void loop() {
   Serial.print(sector);
   Serial.print(" adv ");
   Serial.print(calc_adv);
-  Serial.print(" inj ");
-  Serial.print(OCR0A);
   Serial.print(" period ");
   Serial.print(period);
   Serial.print(" rpm ");
